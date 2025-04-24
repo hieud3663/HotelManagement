@@ -228,6 +228,65 @@ CREATE TABLE Invoice (
 GO
 
 
+------------------
+-- Thêm ràng buộc 
+-----------------
+-- Đảm bảo tên khách hàng và nhân viên không chứa ký tự đặc biệt
+ALTER TABLE Customer
+ADD CONSTRAINT CHK_Customer_FullName 
+CHECK (fullName NOT LIKE '%[0-9!@#$%^&*()_+={}[\]|\\:;"<>,.?/~`]%');
+GO
+
+ALTER TABLE Employee
+ADD CONSTRAINT CHK_Employee_FullName 
+CHECK (fullName NOT LIKE '%[0-9!@#$%^&*()_+={}[\]|\\:;"<>,.?/~`]%');
+GO
+
+-- Thêm ràng buộc validate sdt,  email trong bảng Employee
+ALTER TABLE Employee
+ADD CONSTRAINT CHK_Employee_PhoneNumber 
+CHECK (LEN(phoneNumber) = 10 AND ISNUMERIC(phoneNumber) = 1 AND LEFT(phoneNumber, 1) = '0');
+GO
+
+ALTER TABLE Employee
+ADD CONSTRAINT CHK_Employee_Email 
+CHECK (email LIKE '%@%.%' AND CHARINDEX('@', email) > 1);
+GO
+
+-- Thêm ràng buộc validate sdt, email trong bảng Customer
+ALTER TABLE Customer
+ADD CONSTRAINT CHK_Customer_PhoneNumber 
+CHECK (LEN(phoneNumber) = 10 AND ISNUMERIC(phoneNumber) = 1 AND LEFT(phoneNumber, 1) = '0');
+GO
+
+ALTER TABLE Customer
+ADD CONSTRAINT CHK_Customer_Email 
+CHECK (email IS NULL OR (email LIKE '%@%.%' AND CHARINDEX('@', email) > 1));
+GO
+
+-- Thêm ràng buộc validate idCardNumber trong bảng Employee
+ALTER TABLE Employee
+ADD CONSTRAINT CHK_Employee_IDCardNumber 
+CHECK (ISNUMERIC(idCardNumber) = 1 AND LEN(idCardNumber) = 12);
+GO
+
+-- Thêm ràng buộc validate idCardNumber trong bảng Customer
+ALTER TABLE Customer
+ADD CONSTRAINT CHK_Customer_IDCardNumber 
+CHECK (ISNUMERIC(idCardNumber) = 1 AND LEN(idCardNumber) = 12);
+GO
+
+-- Đảm bảo dateOfCreation không vượt quá ngày hiện tại
+ALTER TABLE Room
+ADD CONSTRAINT CHK_Room_DateOfCreation 
+CHECK (dateOfCreation <= GETDATE());
+GO
+
+-- Đảm bảo thời gian check-out không quá sớm sau check-in (ít nhất 1 giờ)
+ALTER TABLE ReservationForm
+ADD CONSTRAINT CHK_ReservationForm_MinStayDuration 
+CHECK (DATEDIFF(HOUR, checkInDate, checkOutDate) >= 1);
+GO
 
 -- ===================================================================================
 -- 2. TRIGGER - PROCEDURE - FUNCTION
@@ -663,14 +722,14 @@ END;
 GO
 
 -- -- Trigger kiểm tra trạng thái đặt phòng khi thêm dịch vụ
-CREATE TRIGGER TR_RoomUsageService_CheckReservationStatus
+CREATE OR ALTER TRIGGER TR_RoomUsageService_CheckReservationStatus
 ON RoomUsageService
 INSTEAD OF INSERT
 AS
 BEGIN
     SET NOCOUNT ON;
     
-    -- Kiểm tra nếu có bản ghi nào tham chiếu đến phiếu đặt phòng đã hủy
+    -- Kiểm tra trường hợp đặt phòng đã bị hủy
     IF EXISTS (
         SELECT 1
         FROM inserted i
@@ -695,7 +754,30 @@ BEGIN
         RETURN;
     END
     
-    -- Nếu tất cả đặt phòng đều hợp lệ, tiến hành thêm dịch vụ
+    -- Kiểm tra trường hợp đã check-out
+    IF EXISTS (
+        SELECT 1
+        FROM inserted i
+        JOIN HistoryCheckOut ho ON i.reservationFormID = ho.reservationFormID
+    )
+    BEGIN
+        DECLARE @CheckedOutReservations TABLE (reservationFormID NVARCHAR(15));
+        
+        INSERT INTO @CheckedOutReservations (reservationFormID)
+        SELECT DISTINCT i.reservationFormID
+        FROM inserted i
+        JOIN HistoryCheckOut ho ON i.reservationFormID = ho.reservationFormID;
+        
+        DECLARE @CheckOutErrorMsg NVARCHAR(MAX) = N'Không thể thêm dịch vụ cho (các) đặt phòng đã check-out sau:';
+        
+        SELECT @CheckOutErrorMsg = @CheckOutErrorMsg + CHAR(13) + '- ' + reservationFormID
+        FROM @CheckedOutReservations;
+        
+        RAISERROR(@CheckOutErrorMsg, 16, 1);
+        RETURN;
+    END
+    
+    -- Nếu tất cả đều hợp lệ, tiến hành thêm dịch vụ
     INSERT INTO RoomUsageService (
         roomUsageServiceId, quantity, unitPrice, dateAdded,
         hotelServiceId, reservationFormID, employeeID
